@@ -302,7 +302,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ))
     }
 
-    override fun onCleared() { audioEngine.stopAll(); super.onCleared() }
+    override fun onCleared() {
+        volumeSaveHandler.removeCallbacks(saveVolumeRunnable)
+        store.save(data)
+        audioEngine.onPlayingChanged = null
+        super.onCleared()
+    }
 
     private fun mutateActivePage(f: (PadPage) -> PadPage) {
         val p = activeProfile ?: return
