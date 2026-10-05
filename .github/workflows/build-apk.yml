@@ -16,20 +16,22 @@ jobs:
         uses: actions/checkout@v5
       - name: Extract app source
         run: unzip -q ScenePad-Android-MVP-api37.zip
+      - name: Configure stable Android dependencies
+        run: |
+          sed -i \
+            -e 's/compileSdk = 37/compileSdk = 36/' \
+            -e 's/compose-bom:2026.09.00/compose-bom:2025.12.00/' \
+            -e 's/activity-compose:1.13.0/activity-compose:1.11.0/' \
+            -e 's/lifecycle-viewmodel-compose:2.11.0/lifecycle-viewmodel-compose:2.10.0/' \
+            -e 's/lifecycle-runtime-compose:2.11.0/lifecycle-runtime-compose:2.10.0/' \
+            ScenePad/app/build.gradle.kts
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-      - name: Install Android SDK 37 preview
-        run: |
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          "$SDKMANAGER" --channel=3 "platforms;android-CinnamonBun"
-          BUILD_TOOLS_PACKAGE=$("$SDKMANAGER" --channel=3 --list | awk -F '|' '/build-tools;37\./ {gsub(/^[ \t]+|[ \t]+$/, "", $1); print $1}' | tail -n 1)
-          test -n "$BUILD_TOOLS_PACKAGE"
-          "$SDKMANAGER" --channel=3 "$BUILD_TOOLS_PACKAGE"
-      - name: Configure preview SDK for Gradle
-        run: sed -i 's/compileSdk = 37/compileSdkPreview = "CinnamonBun"/' ScenePad/app/build.gradle.kts
+      - name: Install Android SDK 36
+        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
