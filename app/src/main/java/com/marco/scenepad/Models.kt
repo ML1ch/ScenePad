@@ -8,6 +8,7 @@ data class AudioAsset(
 )
 
 enum class LightEffect { STATIC, FIRE, PULSE, SUNSET }
+enum class RetriggerMode { FADE_STOP, OVERLAP, RESTART }
 
 data class LightAction(
     val enabled: Boolean = false,
@@ -31,6 +32,7 @@ data class PadButton(
     val fadeOutMs: Long = 0,
     val volume: Float = 1f,
     val loop: Boolean = false,
+    val retriggerMode: RetriggerMode = RetriggerMode.RESTART,
     val light: LightAction = LightAction()
 )
 

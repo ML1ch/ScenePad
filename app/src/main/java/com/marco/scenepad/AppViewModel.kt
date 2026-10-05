@@ -6,32 +6,59 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.yausername.youtubedl_android.FFmpeg
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.UUID
+
+data class YoutubeImportProgress(val percent: Int = 0, val message: String = "Preparando…", val error: String? = null)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = JsonStore(app)
-    val audioEngine = AudioEngine()
+    val audioEngine = (app as ScenePadApplication).audioEngine
     val lightController: LightController = DemoLightController()
+    private val appContext = app.applicationContext
+    private var youtubeProcessId: String? = null
+    private var youtubeWorkDir: File? = null
+    private val volumeSaveHandler = Handler(Looper.getMainLooper())
+    private val saveVolumeRunnable = Runnable { store.save(data) }
 
     var data by mutableStateOf(store.load())
+        private set
+    var playingButtonIds by mutableStateOf(audioEngine.playingButtonIds())
+        private set
+    var pendingAudioImport by mutableStateOf<AudioAsset?>(null)
+        private set
+    var youtubeImportProgress by mutableStateOf<YoutubeImportProgress?>(null)
         private set
     var selectedPageIndex by mutableStateOf(0)
     var arrangeSourceButtonId by mutableStateOf<String?>(null)
     var lightStatus by mutableStateOf("Não conectado")
 
+    init {
+        audioEngine.onPlayingChanged = { playingButtonIds = it }
+    }
+
     val activeProfile: Profile? get() = data.profiles.firstOrNull { it.id == data.activeProfileId }
     val activePage: PadPage? get() = activeProfile?.pages?.getOrNull(selectedPageIndex)
 
-    fun setMasterVolume(v: Float) = update(data.copy(masterVolume = v.coerceIn(0f, 1f)))
+    fun setMasterVolume(v: Float) {
+        val volume = v.coerceIn(0f, 1f)
+        update(data.copy(masterVolume = volume))
+        audioEngine.setMasterVolume(volume)
+    }
 
     fun selectProfile(id: String) {
         selectedPageIndex = 0
@@ -101,7 +128,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun play(button: PadButton) {
-        button.audioId?.let { id -> data.audios.firstOrNull { it.id == id }?.let { audioEngine.play(button, it, data.masterVolume) } }
+        button.audioId?.let { id -> data.audios.firstOrNull { it.id == id }?.let { AudioPlaybackService.play(appContext, button, it, data.masterVolume) } }
         if (button.light.enabled) viewModelScope.launch {
             val result = lightController.execute(button.light)
             if (result.isFailure) lightStatus = result.exceptionOrNull()?.message ?: "Falha na luz"
@@ -113,25 +140,120 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         lightStatus = if (r.isSuccess) "Modo demonstração conectado" else "Falha ao conectar"
     }
 
-    fun importAudio(context: Context, uri: Uri) = viewModelScope.launch {
+    fun prepareAudioImport(context: Context, uri: Uri) = viewModelScope.launch {
         val asset = withContext(Dispatchers.IO) {
             val resolver = context.contentResolver
             val display = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                 if (c.moveToFirst()) c.getString(0) else null
             } ?: "audio-${System.currentTimeMillis()}"
-            val ext = display.substringAfterLast('.', "bin")
-            val dir = File(context.filesDir, "audio").apply { mkdirs() }
+            val ext = display.substringAfterLast('.', "audio").takeIf { it.length <= 8 } ?: "audio"
+            val dir = File(context.cacheDir, "audio-imports").apply { mkdirs() }
             val out = File(dir, "${UUID.randomUUID()}.$ext")
             resolver.openInputStream(uri)?.use { input -> out.outputStream().use { input.copyTo(it) } } ?: return@withContext null
-            val mmr = MediaMetadataRetriever()
-            val duration = runCatching {
-                mmr.setDataSource(out.absolutePath)
-                mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            }.getOrDefault(0L)
-            runCatching { mmr.release() }
-            AudioAsset(UUID.randomUUID().toString(), display.substringBeforeLast('.'), out.absolutePath, duration)
+            val duration = readDuration(out)
+            if (duration <= 0L) { out.delete(); return@withContext null }
+            AudioAsset(UUID.randomUUID().toString(), File(display).nameWithoutExtension, out.absolutePath, duration)
         }
-        if (asset != null) update(data.copy(audios = data.audios + asset))
+        if (asset != null) pendingAudioImport = asset
+    }
+
+    fun downloadYoutubeAudio(rawUrl: String) {
+        val url = rawUrl.trim()
+        val parsed = runCatching { java.net.URI(url) }.getOrNull()
+        val host = parsed?.host?.lowercase()
+        if (parsed?.scheme !in listOf("http", "https") || host !in setOf("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be")) {
+            youtubeImportProgress = YoutubeImportProgress(error = "Cole um link válido do YouTube.")
+            return
+        }
+        if (youtubeImportProgress?.error == null && youtubeImportProgress != null) return
+        youtubeImportProgress = YoutubeImportProgress(message = "Lendo o vídeo…")
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    initializeYoutubeTools()
+                    val info = YoutubeDL.getInstance().getInfo(url)
+                    val workDir = File(appContext.cacheDir, "youtube-import-${UUID.randomUUID()}").apply { mkdirs() }
+                    youtubeWorkDir = workDir
+                    val processId = UUID.randomUUID().toString()
+                    youtubeProcessId = processId
+                    val request = YoutubeDLRequest(url).apply {
+                        addOption("--no-playlist")
+                        addOption("--extract-audio")
+                        addOption("--audio-format", "mp3")
+                        addOption("--audio-quality", "5")
+                        addOption("--no-part")
+                        addOption("-o", File(workDir, "audio.%(ext)s").absolutePath)
+                    }
+                    YoutubeDL.getInstance().execute(request, { progress, eta ->
+                        val percent = progress.toInt().coerceIn(0, 100)
+                        viewModelScope.launch {
+                            if (youtubeProcessId == processId) youtubeImportProgress = YoutubeImportProgress(percent, "Baixando áudio — ${percent}%${if (eta > 0) " · ${eta}s restantes" else ""}")
+                        }
+                    }, processId)
+                    val output = File(workDir, "audio.mp3")
+                    check(output.isFile && output.length() > 0) { "O YouTube não retornou um arquivo de áudio." }
+                    val duration = readDuration(output)
+                    check(duration > 0) { "Não consegui ler a duração do áudio baixado." }
+                    AudioAsset(UUID.randomUUID().toString(), info.title?.takeIf { it.isNotBlank() } ?: "Áudio do YouTube", output.absolutePath, duration)
+                }
+            }
+            if (result.isSuccess) {
+                pendingAudioImport = result.getOrThrow()
+                youtubeImportProgress = null
+                youtubeProcessId = null
+                youtubeWorkDir = null
+            } else {
+                val message = result.exceptionOrNull()?.localizedMessage?.takeIf { it.isNotBlank() } ?: "Falha ao baixar o áudio. Tente outro link."
+                youtubeImportProgress = YoutubeImportProgress(error = message)
+                youtubeProcessId = null
+                youtubeWorkDir?.deleteRecursively()
+                youtubeWorkDir = null
+            }
+        }
+    }
+
+    fun cancelYoutubeDownload() {
+        youtubeProcessId?.let { runCatching { YoutubeDL.getInstance().destroyProcessById(it) } }
+        youtubeWorkDir?.deleteRecursively()
+        youtubeProcessId = null
+        youtubeWorkDir = null
+        youtubeImportProgress = null
+    }
+
+    fun finishAudioImport(name: String) {
+        val pending = pendingAudioImport ?: return
+        val source = File(pending.path)
+        val destinationDir = File(appContext.filesDir, "audio").apply { mkdirs() }
+        val extension = source.extension.ifBlank { "mp3" }
+        val destination = File(destinationDir, "${pending.id}.$extension")
+        if (!source.renameTo(destination)) {
+            runCatching { source.copyTo(destination, overwrite = true); source.delete() }.onFailure { return }
+        }
+        val added = pending.copy(name = name.trim().ifBlank { pending.name }, path = destination.absolutePath)
+        pendingAudioImport = null
+        update(data.copy(audios = data.audios + added))
+    }
+
+    fun cancelPendingAudioImport() {
+        pendingAudioImport?.let { runCatching { File(it.path).delete() } }
+        pendingAudioImport = null
+    }
+
+    private fun initializeYoutubeTools() {
+        synchronized(youtubeInitialized) {
+            if (youtubeInitialized.get()) return
+            YoutubeDL.getInstance().init(appContext)
+            FFmpeg.getInstance().init(appContext)
+            youtubeInitialized.set(true)
+        }
+    }
+
+    private fun readDuration(file: File): Long {
+        val mmr = MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(file.absolutePath)
+            mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        } catch (_: Exception) { 0L } finally { runCatching { mmr.release() } }
     }
 
     suspend fun importButtonImage(context: Context, uri: Uri): String? = withContext(Dispatchers.IO) {
@@ -143,9 +265,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }.getOrNull()
     }
 
-    fun renameAudio(id: String, name: String) = update(data.copy(audios = data.audios.map { if (it.id == id) it.copy(name = name) else it }))
+    fun renameAudio(id: String, name: String) = update(data.copy(audios = data.audios.map { if (it.id == id) it.copy(name = name.trim().ifBlank { it.name }) else it }))
+
+    fun isPlaying(buttonId: String) = buttonId in playingButtonIds
+
+    fun setButtonVolume(buttonId: String, volume: Float) {
+        val level = volume.coerceIn(0f, 1f)
+        val profileId = data.activeProfileId ?: return
+        val profile = activeProfile ?: return
+        val currentPage = profile.pages.getOrNull(selectedPageIndex) ?: return
+        val button = currentPage.buttons.firstOrNull { it.id == buttonId } ?: return
+        if (!isPlaying(buttonId)) return
+        val updated = button.copy(volume = level)
+        audioEngine.setButtonVolume(buttonId, level, data.masterVolume)
+        data = data.copy(profiles = data.profiles.map { p ->
+            if (p.id != profileId) p else p.copy(pages = p.pages.mapIndexed { index, page ->
+                if (index != selectedPageIndex) page else page.copy(buttons = page.buttons.map { if (it.id == buttonId) updated else it })
+            })
+        }))
+        volumeSaveHandler.removeCallbacks(saveVolumeRunnable)
+        volumeSaveHandler.postDelayed(saveVolumeRunnable, 350)
+    }
+
+    fun commitVolumeChanges() {
+        volumeSaveHandler.removeCallbacks(saveVolumeRunnable)
+        store.save(data)
+    }
 
     fun deleteAudio(id: String) {
+        val buttonIds = data.profiles.flatMap { it.pages }.flatMap { it.buttons }.filter { it.audioId == id }.map { it.id }
+        buttonIds.forEach { audioEngine.stopButton(it) }
         data.audios.firstOrNull { it.id == id }?.let { runCatching { File(it.path).delete() } }
         update(data.copy(
             audios = data.audios.filterNot { it.id == id },
@@ -170,4 +319,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         data = newData
         store.save(newData)
     }
+
+    companion object { private val youtubeInitialized = AtomicBoolean(false) }
 }

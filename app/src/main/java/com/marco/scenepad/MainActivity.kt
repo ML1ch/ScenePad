@@ -10,6 +10,8 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -28,12 +30,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.consume
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     private val vm by viewModels<AppViewModel>()
@@ -138,8 +143,11 @@ private fun PadScreen(vm: AppViewModel, arrangeMode: Boolean, onEdit: (PadButton
                     PadButtonCard(
                         b,
                         selected = vm.arrangeSourceButtonId == b.id,
+                        isPlaying = vm.isPlaying(b.id),
                         onTap = { if (arrangeMode) vm.arrangeTap(b.id) else vm.play(b) },
                         onLong = { onEdit(b) },
+                        onVolumeChange = { vm.setButtonVolume(b.id, it) },
+                        onVolumeDragEnd = vm::commitVolumeChanges,
                         modifier = Modifier.padding(5.dp).height((620f / page.rows.coerceAtLeast(2)).coerceIn(90f, 190f).dp)
                     )
                 }
@@ -150,15 +158,40 @@ private fun PadScreen(vm: AppViewModel, arrangeMode: Boolean, onEdit: (PadButton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PadButtonCard(b: PadButton, selected: Boolean, onTap: () -> Unit, onLong: () -> Unit, modifier: Modifier = Modifier) {
+private fun PadButtonCard(
+    b: PadButton,
+    selected: Boolean,
+    isPlaying: Boolean,
+    onTap: () -> Unit,
+    onLong: () -> Unit,
+    onVolumeChange: (Float) -> Unit,
+    onVolumeDragEnd: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val c = parseColor(b.colorHex)
+    val currentVolume by rememberUpdatedState(b.volume)
+    val volumeChange by rememberUpdatedState(onVolumeChange)
+    val dragEnd by rememberUpdatedState(onVolumeDragEnd)
     Card(
-        onClick = onTap,
         modifier = modifier,
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primary else c)
     ) {
-        Box(Modifier.fillMaxSize().clickable(onClick = onTap).padding(10.dp)) {
+        Box(Modifier.fillMaxSize()
+            .pointerInput(b.id, isPlaying) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { change, dragAmount ->
+                        if (isPlaying) {
+                            change.consume()
+                            volumeChange((currentVolume - dragAmount / 360f).coerceIn(0f, 1f))
+                        }
+                    },
+                    onDragEnd = { if (isPlaying) dragEnd() },
+                    onDragCancel = { if (isPlaying) dragEnd() }
+                )
+            }
+            .combinedClickable(onClick = onTap, onLongClick = onLong)
+            .padding(10.dp)) {
             b.imagePath?.let { path ->
                 remember(path) { BitmapFactory.decodeFile(path) }?.let { bm ->
                     Image(bm.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -170,6 +203,7 @@ private fun PadButtonCard(b: PadButton, selected: Boolean, onTap: () -> Unit, on
                 Spacer(Modifier.height(6.dp))
                 Text(b.label, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 2)
                 if (b.light.enabled) Text("💡", fontSize = 13.sp)
+                if (isPlaying) Text("▶  ${(b.volume * 100).roundToInt()}%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             }
             IconButton(onClick = onLong, modifier = Modifier.align(Alignment.TopEnd).size(32.dp)) { Icon(Icons.Default.Edit, "Editar", Modifier.size(17.dp)) }
         }
@@ -179,9 +213,16 @@ private fun PadButtonCard(b: PadButton, selected: Boolean, onTap: () -> Unit, on
 @Composable
 private fun LibraryScreen(vm: AppViewModel) {
     val context = LocalContext.current
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { vm.importAudio(context, it) } }
+    var showYoutubeImport by remember { mutableStateOf(false) }
+    var renameAsset by remember { mutableStateOf<AudioAsset?>(null) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { vm.prepareAudioImport(context, it) } }
+    LaunchedEffect(vm.pendingAudioImport?.id) { if (vm.pendingAudioImport != null) showYoutubeImport = false }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Button(onClick = { launcher.launch(arrayOf("audio/*")) }, Modifier.fillMaxWidth()) { Icon(Icons.Default.AudioFile, null); Spacer(Modifier.width(8.dp)); Text("Adicionar áudio") }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { launcher.launch(arrayOf("audio/*")) }, Modifier.weight(1f)) { Icon(Icons.Default.AudioFile, null); Spacer(Modifier.width(8.dp)); Text("Do celular") }
+            OutlinedButton(onClick = { showYoutubeImport = true }, Modifier.weight(1f)) { Icon(Icons.Default.Link, null); Spacer(Modifier.width(6.dp)); Text("Link do YouTube") }
+        }
+        Text("Áudios longos são salvos no aparelho; confira se há espaço livre.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
         Spacer(Modifier.height(12.dp))
         if (vm.data.audios.isEmpty()) Text("Sua biblioteca está vazia.")
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -189,11 +230,84 @@ private fun LibraryScreen(vm: AppViewModel) {
                 Card { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.MusicNote, null); Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) { Text(a.name, fontWeight = FontWeight.Bold); Text(formatTime(a.durationMs), fontSize = 12.sp) }
+                    IconButton(onClick = { renameAsset = a }) { Icon(Icons.Default.Edit, "Renomear áudio") }
                     IconButton(onClick = { vm.deleteAudio(a.id) }) { Icon(Icons.Default.Delete, "Excluir") }
                 } }
             }
         }
     }
+
+    if (showYoutubeImport) YoutubeImportDialog(vm, onClose = { showYoutubeImport = false })
+    vm.pendingAudioImport?.let { pending ->
+        AudioNameDialog(
+            title = "Nome na biblioteca",
+            initialName = pending.name,
+            confirmLabel = "Adicionar",
+            onConfirm = { vm.finishAudioImport(it) },
+            onCancel = vm::cancelPendingAudioImport
+        )
+    }
+    renameAsset?.let { asset ->
+        AudioNameDialog(
+            title = "Renomear áudio",
+            initialName = asset.name,
+            confirmLabel = "Salvar",
+            onConfirm = { vm.renameAudio(asset.id, it); renameAsset = null },
+            onCancel = { renameAsset = null }
+        )
+    }
+}
+
+@Composable
+private fun YoutubeImportDialog(vm: AppViewModel, onClose: () -> Unit) {
+    var url by remember { mutableStateOf("") }
+    val status = vm.youtubeImportProgress
+    val busy = status != null && status.error == null
+    AlertDialog(
+        onDismissRequest = { if (!busy) onClose() },
+        title = { Text("Importar áudio do YouTube") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (status == null || status.error != null) {
+                OutlinedTextField(url, { url = it }, label = { Text("Link do vídeo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text("A extração usa uma ferramenta não oficial e pode falhar se o YouTube mudar. Importe conteúdo que você tem autorização para usar.", style = MaterialTheme.typography.bodySmall)
+                Text("O arquivo é processado em fluxo, sem carregar o vídeo inteiro na memória. Uma ou duas horas de áudio podem ocupar bastante espaço.", style = MaterialTheme.typography.bodySmall)
+            }
+            if (busy) {
+                LinearProgressIndicator(progress = { (status.percent / 100f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                Text(status.message)
+                Text("Mantenha o app aberto até a importação terminar.", style = MaterialTheme.typography.bodySmall)
+            }
+            status?.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        } },
+        confirmButton = {
+            TextButton(enabled = !busy && url.isNotBlank(), onClick = { vm.downloadYoutubeAudio(url) }) {
+                Text(if (status?.error != null) "Tentar de novo" else "Baixar áudio")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { if (busy) vm.cancelYoutubeDownload() else if (status != null) vm.cancelYoutubeDownload(); onClose() }) {
+                Text(if (busy) "Cancelar download" else "Fechar")
+            }
+        }
+    )
+}
+
+@Composable
+private fun AudioNameDialog(
+    title: String,
+    initialName: String,
+    confirmLabel: String,
+    onConfirm: (String) -> Unit,
+    onCancel: () -> Unit
+) {
+    var name by remember(initialName, title) { mutableStateOf(initialName) }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(title) },
+        text = { OutlinedTextField(name, { name = it }, label = { Text("Nome do áudio") }, singleLine = true, modifier = Modifier.fillMaxWidth()) },
+        confirmButton = { TextButton(onClick = { onConfirm(name) }) { Text(confirmLabel) } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancelar") } }
+    )
 }
 
 @Composable
@@ -289,6 +403,23 @@ private fun ButtonEditorDialog(vm: AppViewModel, initial: PadButton, dismiss: ()
                 } }
                 item { Text("Volume: ${(b.volume * 100).toInt()}%"); Slider(b.volume, { b = b.copy(volume = it) }) }
                 item { Row(verticalAlignment = Alignment.CenterVertically) { Switch(b.loop, { b = b.copy(loop = it) }); Spacer(Modifier.width(8.dp)); Text("Repetir em loop") } }
+                item {
+                    Column {
+                        HorizontalDivider()
+                        Text("Ao tocar de novo enquanto o áudio está tocando", fontWeight = FontWeight.Bold)
+                        RetriggerMode.entries.forEach { mode ->
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { b = b.copy(retriggerMode = mode) }) {
+                                RadioButton(selected = b.retriggerMode == mode, onClick = { b = b.copy(retriggerMode = mode) })
+                                Text(when (mode) {
+                                    RetriggerMode.FADE_STOP -> "Parar com fade-out"
+                                    RetriggerMode.OVERLAP -> "Tocar outra instância"
+                                    RetriggerMode.RESTART -> "Parar e recomeçar"
+                                })
+                            }
+                        }
+                        Text("Enquanto toca, arraste para cima ou para baixo no botão para ajustar o volume.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
                 item { HorizontalDivider(); Text("Ação de luz", fontWeight = FontWeight.Bold) }
                 item { Row(verticalAlignment = Alignment.CenterVertically) { Switch(b.light.enabled, { b = b.copy(light = b.light.copy(enabled = it)) }); Spacer(Modifier.width(8.dp)); Text("Disparar luz junto") } }
                 if (b.light.enabled) {
