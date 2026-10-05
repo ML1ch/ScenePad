@@ -1,1 +1,21 @@
-# ScenePad
+# ScenePad — MVP para Android
+
+Aplicativo Android de soundpad para RPG e ambientação, com perfis, páginas, biblioteca local de áudio e ações de iluminação preparadas na arquitetura.
+
+## Recursos
+
+- Perfis independentes e várias páginas por perfil.
+- Grade de botões configurável.
+- Importação de áudios e cópia para o armazenamento privado do app.
+- Reprodução simultânea de sons, recorte, fade-in/fade-out, loop e controles de volume.
+- Botões personalizáveis com nome, ícone, cor e imagem.
+- Reorganização dos botões por toque.
+- Ações demonstrativas de iluminação por botão.
+
+Na versão 0.1, a integração com lâmpadas reais ainda não está ativa. Veja [GOOGLE_HOME_INTEGRATION.md](GOOGLE_HOME_INTEGRATION.md) para os próximos passos.
+
+## Abrir e executar
+
+Abra a pasta raiz deste repositório no Android Studio. O projeto usa JDK 17 e Android SDK 36. Aguarde a sincronização do Gradle e execute em dispositivo ou emulador Android 8.0 (API 26) ou superior.
+
+O GitHub Actions compila o APK de depuração a cada push na branch main e também pode ser iniciado manualmente em Actions > Build ScenePad APK. O artefato scenepad-debug-apk fica disponível por 30 dias.
