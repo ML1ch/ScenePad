@@ -13,7 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.yausername.youtubedl_android.FFmpeg
+import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
@@ -107,7 +107,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteButton(id: String) {
-        audioEngine.stop(id)
+        audioEngine.stopButton(id)
         mutateActivePage { pg -> pg.copy(buttons = pg.buttons.filterNot { it.id == id }) }
     }
 
@@ -184,12 +184,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         addOption("--no-part")
                         addOption("-o", File(workDir, "audio.%(ext)s").absolutePath)
                     }
-                    YoutubeDL.getInstance().execute(request, { progress, eta ->
+                    YoutubeDL.getInstance().execute(request, processId) { progress, eta, _ ->
                         val percent = progress.toInt().coerceIn(0, 100)
                         viewModelScope.launch {
                             if (youtubeProcessId == processId) youtubeImportProgress = YoutubeImportProgress(percent, "Baixando áudio — ${percent}%${if (eta > 0) " · ${eta}s restantes" else ""}")
                         }
-                    }, processId)
+                    }
                     val output = File(workDir, "audio.mp3")
                     check(output.isFile && output.length() > 0) { "O YouTube não retornou um arquivo de áudio." }
                     val duration = readDuration(output)
@@ -282,7 +282,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (p.id != profileId) p else p.copy(pages = p.pages.mapIndexed { index, page ->
                 if (index != selectedPageIndex) page else page.copy(buttons = page.buttons.map { if (it.id == buttonId) updated else it })
             })
-        }))
+        })
         volumeSaveHandler.removeCallbacks(saveVolumeRunnable)
         volumeSaveHandler.postDelayed(saveVolumeRunnable, 350)
     }
