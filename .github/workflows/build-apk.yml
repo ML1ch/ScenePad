@@ -37,6 +37,7 @@ jobs:
         run: |
           sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
           sed -i 's/targetSdk = 37/targetSdk = 36/' app/build.gradle.kts
+          sed -i '1i @file:Suppress("DEPRECATION")' app/build.gradle.kts
           gradle --no-daemon --stacktrace assembleDebug
 
       - name: Upload APK artifact
