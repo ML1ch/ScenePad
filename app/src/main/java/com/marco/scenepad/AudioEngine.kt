@@ -21,7 +21,7 @@ class AudioEngine(private val context: Context) {
         val buttonId: String,
         val player: MediaPlayer,
         val asset: AudioAsset,
-        val button: PadButton,
+        var button: PadButton,
         val masterVolume: Float,
         var targetGain: Float,
         var envelope: Float,
@@ -58,6 +58,7 @@ class AudioEngine(private val context: Context) {
 
     fun setButtonVolume(buttonId: String, volume: Float, masterVolume: Float) {
         channels[buttonId]?.forEach { instance ->
+            instance.button = instance.button.copy(volume = volume.coerceIn(0f, 1f))
             instance.targetGain = (volume * masterVolume).coerceIn(0f, 1f)
             applyVolume(instance)
         }
