@@ -24,10 +24,12 @@ jobs:
       - name: Install Android SDK 37 preview
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          "$SDKMANAGER" --channel=3 "platforms;android-37"
+          "$SDKMANAGER" --channel=3 "platforms;android-CinnamonBun"
           BUILD_TOOLS_PACKAGE=$("$SDKMANAGER" --channel=3 --list | awk -F '|' '/build-tools;37\./ {gsub(/^[ \t]+|[ \t]+$/, "", $1); print $1}' | tail -n 1)
           test -n "$BUILD_TOOLS_PACKAGE"
           "$SDKMANAGER" --channel=3 "$BUILD_TOOLS_PACKAGE"
+      - name: Configure preview SDK for Gradle
+        run: sed -i 's/compileSdk = 37/compileSdkPreview = "CinnamonBun"/' ScenePad/app/build.gradle.kts
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
