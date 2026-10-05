@@ -42,7 +42,7 @@ class JsonStore(private val context: Context) {
                                 put("imagePath", b.imagePath); put("audioId", b.audioId)
                                 put("startMs", b.startMs); put("endMs", b.endMs)
                                 put("fadeInMs", b.fadeInMs); put("fadeOutMs", b.fadeOutMs)
-                                put("volume", b.volume.toDouble()); put("loop", b.loop)
+                                put("volume", b.volume.toDouble()); put("loop", b.loop); put("retriggerMode", b.retriggerMode.name)
                                 put("light", JSONObject().apply {
                                     put("enabled", b.light.enabled); put("deviceName", b.light.deviceName)
                                     put("colorHex", b.light.colorHex); put("brightness", b.light.brightness)
@@ -77,6 +77,7 @@ class JsonStore(private val context: Context) {
                                 startMs = b.optLong("startMs", 0), endMs = b.optLong("endMs", 0),
                                 fadeInMs = b.optLong("fadeInMs", 0), fadeOutMs = b.optLong("fadeOutMs", 0),
                                 volume = b.optDouble("volume", 1.0).toFloat().coerceIn(0f, 1f), loop = b.optBoolean("loop", false),
+                                retriggerMode = runCatching { RetriggerMode.valueOf(b.optString("retriggerMode", "RESTART")) }.getOrDefault(RetriggerMode.RESTART),
                                 light = LightAction(
                                     enabled = l.optBoolean("enabled", false), deviceName = l.optString("deviceName", ""),
                                     colorHex = l.optString("colorHex", "#FF7A18"), brightness = l.optInt("brightness", 50).coerceIn(0, 100),
